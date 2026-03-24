@@ -150,6 +150,7 @@ INSTALLED_APPS = [
     'django_cleanup.apps.CleanupConfig',
     'django_unused_media',
     'rest_framework',
+    'rest_framework_simplejwt',
     'rest_framework.authtoken',
 ]
 
@@ -279,3 +280,18 @@ YOUTUBE_DATA_API_KEY = 'api_key'
 
 CORS_ORIGIN_ALLOW_ALL = True
 ALLOW_PASS_RESET = True
+
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+        'rest_framework.authentication.BasicAuthentication',
+    ),
+}
+
+from datetime import timedelta
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+}
