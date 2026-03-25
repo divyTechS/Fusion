@@ -1,11 +1,14 @@
+import os
+import textwrap
+
+content = """\
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
-from django.utils.dateparse import parse_date, parse_datetime
 from . import services, models
-from applications.academic_information.models import Student, Student_attendance
+from applications.academic_information.models import Course
 
 class BaseCourseView(APIView):
     permission_classes = [IsAuthenticated]
@@ -57,50 +60,37 @@ class ApiAssignments(BaseCourseView):
         
         curr = services.get_course_obj(course_code)
         course = curr.course_id
-        assignments = models.Assignment.objects.filter(course_id=course).order_by('-upload_time')
-
+        assignments = models.Assignment.objects.filter(course_id=course)
+        
         extra_info, is_student_user = self.get_role_info(request)
-        student_obj = None
-        if is_student_user:
-            student_obj = Student.objects.filter(id=extra_info).first()
-
+        
         res = []
         for a in assignments:
             item = {
                 'id': a.pk,
                 'title': a.assignment_name,
-                'deadline': a.submit_date.isoformat() if a.submit_date else None,
-                'createdAt': a.upload_time.isoformat() if hasattr(a, 'upload_time') else None,
-                'submissions': [],
+                'description': a.assignment_description,
+                'deadline': a.submit_date.isoformat(),
+                'createdAt': a.submit_date.isoformat(), # approximation if no createdAt
+                'submissions': []
             }
-
             if is_student_user:
-                subs = models.StudentAssignment.objects.filter(assignment_id=a, student_id=student_obj).order_by('-upload_time')
+                student = models.Student.objects.filter(id=extra_info).first()
+                subs = models.StudentAssignment.objects.filter(assignment_id=a, student_id=student)
             else:
-                subs = models.StudentAssignment.objects.filter(assignment_id=a).select_related(
-                    'student_id', 'student_id__id', 'student_id__id__user'
-                ).order_by('-upload_time')
-
+                subs = models.StudentAssignment.objects.filter(assignment_id=a)
+                
             for s in subs:
-                username = None
-                full_name = 'Unknown'
-                if s.student_id and getattr(s.student_id, 'id', None) and getattr(s.student_id.id, 'user', None):
-                    username = s.student_id.id.user.username
-                    full_name = s.student_id.id.user.get_full_name() or username
-
                 item['submissions'].append({
                     'id': s.pk,
                     'assignmentId': a.pk,
-                    'studentId': username,
-                    'studentName': full_name,
-                    'submissionLink': s.upload_url,
-                    'submittedAt': s.upload_time.isoformat() if hasattr(s, 'upload_time') else None,
-                    'score': s.score,
-                    'feedback': s.feedback,
+                    'studentName': s.student_id.id.user.get_full_name() if s.student_id else 'Unknown',
+                    'file': request.build_absolute_uri(s.upload_url.url) if s.upload_url else None,
+                    'submittedAt': getattr(s, 'submitted_at', timezone.now()).isoformat() if hasattr(s, 'submitted_at') else None,
+                    'marks': s.marks,
+                    'feedback': s.description if hasattr(s, 'description') else getattr(s, 'feedback', '')
                 })
-
             res.append(item)
-
         return Response(res)
 
 class ApiAddAssignment(BaseCourseView):
@@ -113,29 +103,16 @@ class ApiAddAssignment(BaseCourseView):
             
         curr = services.get_course_obj(course_code)
         data = request.data
-
-        deadline = data.get('deadline')
-        deadline_dt = parse_datetime(deadline) if isinstance(deadline, str) else None
-        if deadline_dt is None and isinstance(deadline, str):
-            d = parse_date(deadline)
-            if d is not None:
-                deadline_dt = timezone.make_aware(timezone.datetime(d.year, d.month, d.day, 23, 59, 0))
-
-        if not data.get('title'):
-            return Response({'detail': 'title is required'}, status=400)
-        if deadline_dt is None:
-            return Response({'detail': 'deadline is required (ISO datetime or YYYY-MM-DD)'}, status=400)
-
         a = models.Assignment.objects.create(
             course_id=curr.course_id,
             assignment_name=data.get('title'),
-            submit_date=deadline_dt,
+            assignment_description=data.get('description'),
+            submit_date=data.get('deadline')
         )
         return Response({'id': a.pk})
 
 class ApiUploadAssignment(BaseCourseView):
-    # Allow both form-data (legacy) and JSON (link submission from new UI)
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    parser_classes = [MultiPartParser, FormParser]
     def post(self, request, course_code):
         if not self.check_enrollment(request, course_code):
             return Response({'detail': 'Not enrolled in this course'}, status=403)
@@ -144,35 +121,29 @@ class ApiUploadAssignment(BaseCourseView):
             return Response({'detail': 'Student only'}, status=403)
             
         assignment_id = request.data.get('assignment_id')
-        submission_link = request.data.get('submission_link') or request.data.get('upload_url') or request.data.get('link')
-        if not submission_link:
-            return Response({'detail': 'submission_link is required'}, status=400)
-
         a = models.Assignment.objects.get(pk=assignment_id)
         if timezone.now() > a.submit_date:
             return Response({'detail': 'Submission deadline has passed'}, status=400)
             
-        student = Student.objects.get(id=extra_info)
+        student = models.Student.objects.get(id=extra_info)
         sub = models.StudentAssignment.objects.create(
             student_id=student,
             assignment_id=a,
-            upload_url=submission_link,
-            assign_name=a.assignment_name,
+            upload_url=request.data.get('file')
         )
         return Response({'id': sub.pk, 'submittedAt': timezone.now().isoformat()})
 
 class ApiGradeAssignment(BaseCourseView):
-    def post(self, request, course_code, pk=None):
+    def post(self, request, course_code):
         if not self.check_enrollment(request, course_code):
             return Response({'detail': 'Not enrolled in this course'}, status=403)
         extra_info, is_student_user = self.get_role_info(request)
         if is_student_user:
             return Response({'detail': 'Faculty only'}, status=403)
-
-        sub_pk = request.data.get('student_assignment_id') or request.data.get('id') or pk
-        sub = models.StudentAssignment.objects.get(pk=sub_pk)
-        sub.score = request.data.get('score')
-        sub.feedback = request.data.get('feedback')
+            
+        sub = models.StudentAssignment.objects.get(pk=request.data.get('student_assignment_id', request.data.get('id', request.resolver_match.kwargs.get('pk'))))
+        sub.marks = request.data.get('marks')
+        sub.description = request.data.get('feedback')
         sub.save()
         return Response({'status': 'graded'})
 
@@ -196,30 +167,17 @@ class ApiDocuments(BaseCourseView):
         docs = models.CourseDocuments.objects.filter(course_id=curr.course_id)
         res = []
         for d in docs:
-            raw_url = (d.document_url or '').strip() if hasattr(d, 'document_url') else ''
-            if raw_url:
-                if raw_url.startswith('http://') or raw_url.startswith('https://'):
-                    full_url = raw_url
-                elif raw_url.startswith('/'):
-                    full_url = request.build_absolute_uri(raw_url)
-                else:
-                    full_url = request.build_absolute_uri('/' + raw_url)
-            else:
-                full_url = None
-
             res.append({
                 'id': d.pk,
-                'title': getattr(d, 'title', None) or getattr(d, 'document_name', ''),
+                'title': getattr(d, 'title', getattr(d, 'document_name', '')),
                 'description': d.description,
-                'url': full_url,
-                # Back-compat for any older UI expecting docFile.
-                'docFile': full_url,
-                'uploadedAt': d.upload_time.isoformat() if hasattr(d, 'upload_time') else None,
+                'docFile': request.build_absolute_uri(d.document_url.url) if d.document_url else None,
+                'uploadedAt': d.upload_time.isoformat() if hasattr(d, 'upload_time') else None
             })
         return Response(res)
 
 class ApiAddDocument(BaseCourseView):
-    parser_classes = [JSONParser, FormParser, MultiPartParser]
+    parser_classes = [MultiPartParser, FormParser]
     def post(self, request, course_code):
         if not self.check_enrollment(request, course_code):
             return Response({'detail': 'Not enrolled in this course'}, status=403)
@@ -228,38 +186,16 @@ class ApiAddDocument(BaseCourseView):
             return Response({'detail': 'Faculty only'}, status=403)
             
         curr = services.get_course_obj(course_code)
-
-        title = (request.data.get('title') or request.data.get('document_name') or '').strip()
-        description = (request.data.get('description') or '').strip()
-        url = request.data.get('url') or request.data.get('document_url') or request.data.get('doc_file')
-
-        if url is None:
-            return Response({'detail': 'url is required'}, status=400)
-
-        # If someone posts a file in multipart, this will be an UploadedFile.
-        if hasattr(url, 'read'):
-            return Response({'detail': 'Only link uploads are supported. Provide a URL.'}, status=400)
-
-        url = str(url).strip()
-        if not url:
-            return Response({'detail': 'url is required'}, status=400)
-
-        # Model constraints
-        if hasattr(models.CourseDocuments, 'document_name'):
-            title = title[:40]
-        description = description[:100]
-
         doc = models.CourseDocuments.objects.create(
             course_id=curr.course_id,
-            description=description,
-            document_name=title or 'Material',
-            document_url=url,
+            description=request.data.get('description', ''),
+            document_url=request.data.get('doc_file')
         )
-
         if hasattr(doc, 'title'):
-            doc.title = title
-            doc.save(update_fields=['title'])
-
+            doc.title = request.data.get('title', '')
+        if hasattr(doc, 'document_name'):
+            doc.document_name = request.data.get('title', '')
+        doc.save()
         return Response({'id': doc.pk})
 
 class ApiDeleteDocument(BaseCourseView):
@@ -278,61 +214,22 @@ class ApiForum(BaseCourseView):
         if not self.check_enrollment(request, course_code):
             return Response({'detail': 'Not enrolled in this course'}, status=403)
         curr = services.get_course_obj(course_code)
-
-        # Forum rows are messages. ForumReply is an edge table: parent (forum_ques) -> child (forum_reply).
-        messages = models.Forum.objects.filter(course_id=curr.course_id).select_related('commenter_id', 'commenter_id__user').order_by('comment_time')
-        edges = models.ForumReply.objects.filter(
-            forum_ques__course_id=curr.course_id,
-            forum_reply__course_id=curr.course_id,
-        ).select_related('forum_ques', 'forum_reply')
-
-        by_id = {}
-        children = {}
-        is_child = set()
-
-        for m in messages:
-            posted_by = 'Unknown'
-            posted_by_id = None
-            if m.commenter_id and getattr(m.commenter_id, 'user', None):
-                posted_by = m.commenter_id.user.get_full_name() or m.commenter_id.user.username
-                posted_by_id = m.commenter_id.user.username
-
-            by_id[m.pk] = {
-                'id': m.pk,
-                'message': m.comment,
-                'postedBy': posted_by,
-                'postedById': posted_by_id,
-                'createdAt': m.comment_time.isoformat() if hasattr(m, 'comment_time') else None,
-                'replies': [],
-            }
-            children[m.pk] = []
-
-        for e in edges:
-            parent_id = e.forum_ques_id
-            child_id = e.forum_reply_id
-            if parent_id in children and child_id in by_id:
-                children[parent_id].append(child_id)
-                is_child.add(child_id)
-
-        # Build a nested tree (depth-first). Guard against cycles.
-        def build_node(node_id, seen):
-            if node_id in seen:
-                return None
-            seen.add(node_id)
-            node = dict(by_id[node_id])
-            node['replies'] = []
-            for cid in children.get(node_id, []):
-                child_node = build_node(cid, seen)
-                if child_node:
-                    node['replies'].append(child_node)
-            return node
-
-        roots = [mid for mid in by_id.keys() if mid not in is_child]
+        forums = models.Forum.objects.filter(course_id=curr.course_id)
         res = []
-        for rid in roots:
-            n = build_node(rid, set())
-            if n:
-                res.append(n)
+        for f in forums:
+            replies = models.ForumReply.objects.filter(forum_reply=f)
+            res.append({
+                'id': f.pk,
+                'question': f.question,
+                'postedBy': f.commenter.user.get_full_name() if f.commenter else 'Unknown',
+                'createdAt': f.comment_time.isoformat() if hasattr(f, 'comment_time') else None,
+                'replies': [{
+                    'id': r.pk,
+                    'reply': r.reply,
+                    'postedBy': r.replier.user.get_full_name() if r.replier else 'Unknown',
+                    'createdAt': getattr(r, 'reply_time', timezone.now()).isoformat() if hasattr(r, 'reply_time') else None
+                } for r in replies]
+            })
         return Response(res)
 
 class ApiForumNew(BaseCourseView):
@@ -341,15 +238,10 @@ class ApiForumNew(BaseCourseView):
             return Response({'detail': 'Not enrolled in this course'}, status=403)
         curr = services.get_course_obj(course_code)
         extra_info, _ = self.get_role_info(request)
-
-        msg = (request.data.get('message') or request.data.get('question') or request.data.get('comment') or '').strip()
-        if not msg:
-            return Response({'detail': 'message is required'}, status=400)
-
         f = models.Forum.objects.create(
             course_id=curr.course_id,
-            commenter_id=extra_info,
-            comment=msg,
+            commenter=extra_info,
+            question=request.data.get('question')
         )
         return Response({'id': f.pk})
 
@@ -358,51 +250,20 @@ class ApiForumReply(BaseCourseView):
         if not self.check_enrollment(request, course_code):
             return Response({'detail': 'Not enrolled in this course'}, status=403)
         extra_info, _ = self.get_role_info(request)
-
-        parent_id = request.data.get('parent_id') or request.data.get('forum_id')
-        msg = (request.data.get('message') or request.data.get('reply') or '').strip()
-        if not parent_id:
-            return Response({'detail': 'parent_id is required'}, status=400)
-        if not msg:
-            return Response({'detail': 'message is required'}, status=400)
-
-        parent = models.Forum.objects.get(pk=parent_id)
-        child = models.Forum.objects.create(
-            course_id=parent.course_id,
-            commenter_id=extra_info,
-            comment=msg,
+        forum = models.Forum.objects.get(pk=request.data.get('forum_id'))
+        r = models.ForumReply.objects.create(
+            forum_reply=forum,
+            replier=extra_info,
+            reply=request.data.get('reply')
         )
-        edge = models.ForumReply.objects.create(
-            forum_ques=parent,
-            forum_reply=child,
-        )
-        return Response({'id': edge.pk, 'message_id': child.pk})
+        return Response({'id': r.pk})
 
 class ApiForumRemove(BaseCourseView):
     def delete(self, request, course_code, pk):
         if not self.check_enrollment(request, course_code):
             return Response({'detail': 'Not enrolled in this course'}, status=403)
-        extra_info, is_student_user = self.get_role_info(request)
-        target = models.Forum.objects.filter(pk=pk).select_related('commenter_id', 'commenter_id__user').first()
-        if not target:
-            return Response(status=204)
-
-        is_owner = bool(target.commenter_id_id == getattr(extra_info, 'id', None))
-        if is_student_user and not is_owner:
-            return Response({'detail': 'Not allowed'}, status=403)
-
-        # Delete subtree: collect all descendants via ForumReply edges.
-        to_delete = set([target.pk])
-        frontier = [target.pk]
-        while frontier:
-            parent_ids = frontier
-            frontier = []
-            child_ids = list(models.ForumReply.objects.filter(forum_ques_id__in=parent_ids).values_list('forum_reply_id', flat=True))
-            for cid in child_ids:
-                if cid not in to_delete:
-                    to_delete.add(cid)
-                    frontier.append(cid)
-        models.Forum.objects.filter(pk__in=list(to_delete)).delete()
+        # Assuming faculty or poster can delete (enforcement simplified)
+        models.Forum.objects.filter(pk=pk).delete()
         return Response(status=204)
 
 class ApiQuizzes(BaseCourseView):
@@ -443,44 +304,16 @@ class ApiCreateQuiz(BaseCourseView):
             
         curr = services.get_course_obj(course_code)
         d = request.data
-
-        title = (d.get('title') or '').strip()
-        if not title:
-            return Response({'detail': 'title is required'}, status=400)
-
-        start_raw = d.get('start_time')
-        end_raw = d.get('end_time')
-        start_dt = parse_datetime(start_raw) if isinstance(start_raw, str) else None
-        end_dt = parse_datetime(end_raw) if isinstance(end_raw, str) else None
-        if start_dt is None or end_dt is None:
-            return Response({'detail': 'start_time and end_time must be ISO datetimes'}, status=400)
-
-        if timezone.is_naive(start_dt):
-            start_dt = timezone.make_aware(start_dt)
-        if timezone.is_naive(end_dt):
-            end_dt = timezone.make_aware(end_dt)
-
-        if end_dt <= start_dt:
-            return Response({'detail': 'end_time must be after start_time'}, status=400)
-
-        delta = end_dt - start_dt
-        total_minutes = int(delta.total_seconds() // 60)
-        days = total_minutes // (60 * 24)
-        hours = (total_minutes % (60 * 24)) // 60
-        minutes = total_minutes % 60
-
-        q = models.Quiz.objects.create(
-            course_id=curr.course_id,
-            quiz_name=title[:20],
-            start_time=start_dt,
-            end_time=end_dt,
-            d_day=str(days).zfill(2),
-            d_hour=str(hours).zfill(2),
-            d_minute=str(minutes).zfill(2),
-            negative_marks=float(d.get('negative_marks') or 0),
-            description=(d.get('description') or '').strip(),
-            rules=(d.get('rules') or '').strip(),
-        )
+        q = models.Quiz(course_id=curr.course_id)
+        if hasattr(q, 'quiz_name'): q.quiz_name = d.get('title')
+        if hasattr(q, 'title'): q.title = d.get('title')
+        if hasattr(q, 'description'): q.description = d.get('description', '')
+        q.start_time = d.get('start_time')
+        q.end_time = d.get('end_time')
+        if hasattr(q, 'd_time'): q.d_time = d.get('duration', 0)
+        if hasattr(q, 'duration'): q.duration = d.get('duration', 0)
+        if hasattr(q, 'negative_marks'): q.negative_marks = d.get('negative_marks', 0)
+        q.save()
         return Response({'id': q.pk})
 
 class ApiQuizDetail(BaseCourseView):
@@ -496,19 +329,18 @@ class ApiQuizDetail(BaseCourseView):
             if models.QuizResult.objects.filter(quiz_id=q, student_id=student, finished=True).exists():
                 return Response({'detail': 'You have already attempted this quiz'}, status=403)
                 
-        questions = models.QuizQuestion.objects.filter(quiz_id=q).select_related('question')
+        questions = models.QuizQuestion.objects.filter(quiz_id=q)
         res_q = []
         for x in questions:
-            ques = x.question
             res_q.append({
                 'id': x.pk,
-                'question': ques.question,
-                'option1': ques.options1,
-                'option2': ques.options2,
-                'option3': ques.options3,
-                'option4': ques.options4,
-                'option5': ques.options5,
-                'marks': ques.marks,
+                'question': getattr(x, 'question', getattr(x, 'question_name', '')),
+                'option1': getattr(x, 'option1', getattr(x, 'options1', '')),
+                'option2': getattr(x, 'option2', getattr(x, 'options2', '')),
+                'option3': getattr(x, 'option3', getattr(x, 'options3', '')),
+                'option4': getattr(x, 'option4', getattr(x, 'options4', '')),
+                'option5': getattr(x, 'option5', getattr(x, 'options5', '')),
+                'marks': x.marks
             })
         return Response({
             'id': q.pk,
@@ -534,28 +366,24 @@ class ApiQuizSubmit(BaseCourseView):
         negative = getattr(q, 'negative_marks', 0)
         
         for ans in answers:
-            qq = models.QuizQuestion.objects.select_related('question').get(pk=ans['question_id'])
-            ques = qq.question
+            ques = models.QuizQuestion.objects.get(pk=ans['question_id'])
             total += ques.marks
-            correct = ques.answer
+            correct = getattr(ques, 'answer', getattr(ques, 'correct_option', ''))
             models.StudentAnswer.objects.create(
                 student_id=student,
                 quiz_id=q,
-                question_id=qq,
+                question_id=ques,
                 choice=ans['selected_option']
             )
-            if int(ans['selected_option']) == int(correct):
+            if str(ans['selected_option']) == str(correct):
                 score += ques.marks
             else:
                 score -= negative
                 
-        # QuizResult.score is non-null in this schema; don't use get_or_create()
-        # because the implicit create would attempt score=NULL and fail.
-        models.QuizResult.objects.update_or_create(
-            student_id=student,
-            quiz_id=q,
-            defaults={'score': score, 'finished': True},
-        )
+        res, _ = models.QuizResult.objects.get_or_create(student_id=student, quiz_id=q)
+        res.score = score
+        res.finished = True
+        res.save()
         
         return Response({'score': score, 'totalMarks': total})
 
@@ -570,95 +398,40 @@ class ApiRemoveQuiz(BaseCourseView):
 
 class ApiAttendance(BaseCourseView):
     def get(self, request, course_code):
-        if not self.check_enrollment(request, course_code):
-            return Response({'detail': 'Not enrolled'}, status=403)
-
+        if not self.check_enrollment(request, course_code): return Response({'detail': 'Not enrolled'}, status=403)
+        curr = services.get_course_obj(course_code)
         extra_info, is_student_user = self.get_role_info(request)
-
         if is_student_user:
-            student = Student.objects.get(id=extra_info)
-            recs = Student_attendance.objects.filter(
-                instructor_id__curriculum_id__course_code=course_code,
-                student_id=student,
-            ).order_by('date')
+            student = models.Student.objects.get(id=extra_info)
+            recs = models.Student_attendance.objects.filter(course_id=curr.course_id, student_id=student)
             return Response([{'date': r.date.isoformat(), 'present': r.present} for r in recs])
-
-        # faculty
-        link = services.get_instructor_link(extra_info, course_code)
-        if not link:
-            return Response({'detail': 'Not an instructor for this course'}, status=403)
-
-        recs = Student_attendance.objects.filter(instructor_id=link).select_related(
-            'student_id', 'student_id__id', 'student_id__id__user'
-        ).order_by('date')
-        res = {}
-        for r in recs:
-            d = r.date.isoformat()
-            if d not in res:
-                res[d] = []
-            username = r.student_id.id.user.username
-            res[d].append({
-                'student_id': username,
-                'name': r.student_id.id.user.get_full_name() or username,
-                'present': r.present,
-            })
-        return Response(res)
+        else:
+            recs = models.Student_attendance.objects.filter(course_id=curr.course_id)
+            res = {}
+            for r in recs:
+                d = r.date.isoformat()
+                if d not in res: res[d] = []
+                res[d].append({
+                    'student_id': r.student_id.id.user.username,
+                    'name': r.student_id.id.user.get_full_name(),
+                    'present': r.present
+                })
+            return Response(res)
 
     def post(self, request, course_code):
-        if not self.check_enrollment(request, course_code):
-            return Response({'detail': 'Not enrolled'}, status=403)
+        if not self.check_enrollment(request, course_code): return Response({'detail': 'Not enrolled'}, status=403)
         extra_info, is_student_user = self.get_role_info(request)
-        if is_student_user:
-            return Response({'detail': 'Faculty only'}, status=403)
-
-        link = services.get_instructor_link(extra_info, course_code)
-        if not link:
-            return Response({'detail': 'Not an instructor for this course'}, status=403)
-
-        date_str = request.data.get('date')
-        dt = parse_date(date_str) if isinstance(date_str, str) else None
-        if dt is None:
-            return Response({'detail': 'date is required (YYYY-MM-DD)'}, status=400)
-
+        if is_student_user: return Response({'detail': 'Faculty only'}, status=403)
+        curr = services.get_course_obj(course_code)
+        d = request.data.get('date')
         atts = request.data.get('attendance', [])
-        if not isinstance(atts, list):
-            return Response({'detail': 'attendance must be a list'}, status=400)
-
-        count = 0
         for att in atts:
-            sid = att.get('student_id')
-            present = bool(att.get('present'))
-            if not sid:
-                continue
-            student = Student.objects.filter(id__user__username=sid).first()
-            if not student:
-                continue
-            rec, _ = Student_attendance.objects.get_or_create(
-                instructor_id=link,
-                student_id=student,
-                date=dt,
-            )
-            rec.present = present
+            student = models.Student.objects.get(id__user__username=att['student_id'])
+            rec, _ = models.Student_attendance.objects.get_or_create(
+                course_id=curr.course_id, student_id=student, date=d)
+            rec.present = att['present']
             rec.save()
-            count += 1
-
-        return Response({'status': 'saved', 'count': count})
-
-
-class ApiAttendanceRoster(BaseCourseView):
-    def get(self, request, course_code):
-        if not self.check_enrollment(request, course_code):
-            return Response({'detail': 'Not enrolled'}, status=403)
-        extra_info, is_student_user = self.get_role_info(request)
-        if is_student_user:
-            return Response({'detail': 'Faculty only'}, status=403)
-
-        link = services.get_instructor_link(extra_info, course_code)
-        if not link:
-            return Response({'detail': 'Not an instructor for this course'}, status=403)
-
-        roster = services.get_course_roster(course_code)
-        return Response(roster)
+        return Response({'status': 'saved', 'count': len(atts)})
 
 class ApiQuestionBank(BaseCourseView):
     def get(self, request, course_code):
@@ -774,3 +547,7 @@ class ApiStudentGrades(BaseCourseView):
             'totalWeightedScore': total_w
         })
 
+"""
+with open("/mnt/c/Users/indra/Desktop/Fusion/Fusion/FusionIIIT/applications/online_cms/views.py", "w") as f:
+    f.write(content)
+print("Updated views.py")

@@ -10,7 +10,7 @@ class CourseDocuments(models.Model):
     upload_time = models.DateTimeField(auto_now=True)
     description = models.CharField(max_length=100)
     document_name = models.CharField(max_length=40)
-    document_url = models.CharField(max_length=100, null=True)
+    document_url = models.TextField(null=True, blank=True)
 
     def __str__(self):
         return '{} - {}'.format(self.course_id, self.document_name)
@@ -203,3 +203,15 @@ class ForumReply(models.Model):
     def __str__(self):
         return '{} - {} - {}'.format(self.pk, self.forum_ques, self.forum_reply)
 
+
+class GradingScheme(models.Model):
+    course_id = models.ForeignKey(Course, on_delete=models.CASCADE)
+    component = models.CharField(max_length=100)
+    weightage = models.FloatField()
+    max_marks = models.FloatField()
+
+class StudentEvaluation(models.Model):
+    scheme = models.ForeignKey(GradingScheme, on_delete=models.CASCADE)
+    student = models.ForeignKey(Student, on_delete=models.CASCADE)
+    marks_obtained = models.FloatField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)

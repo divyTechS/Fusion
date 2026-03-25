@@ -3,6 +3,13 @@ from django.conf.urls import url
 from . import views
 
 urlpatterns = [
+    url(r'^notification/$', views.NotificationRead, name='dummy_notifs'),
+    url(r'^auth/me$', views.profile, name='me-api-2'),
+
+    url(r'^notification/$', views.NotificationRead, name='dummy_notifs'),
+    url(r'^auth/me$', views.profile, name='me-api-2'),
+
+    url(r'^auth/me/', views.profile, name='me-api'),
 
     url(r'^auth/login/', views.login, name='login-api'),
     url(r'^auth/logout/', views.logout, name='logout-api'),
