@@ -60,11 +60,12 @@ urlpatterns = [
     url(r'^gymkhana/', include('applications.gymkhana.urls')),
     url(r'^library/', include('applications.library.urls')),
     url(r'^establishment/', include('applications.establishment.urls')),
-    url(r'^ocms/', include(('applications.online_cms.urls', 'online_cms'), namespace='online_cms')),
-    url(r'^api/online_cms/', include(('applications.online_cms.urls', 'online_cms'), namespace='online_cms_api')),
+    url(r'^ocms/', include(('applications.online_cms.api.urls', 'online_cms'), namespace='online_cms')),
+    url(r'^api/online_cms/', include(('applications.online_cms.api.urls', 'online_cms'), namespace='online_cms_api')),
     url(r'^counselling/', include('applications.counselling_cell.urls')),
     url(r'^hostelmanagement/', include('applications.hostel_management.urls')),
     url(r'^income-expenditure/', include('applications.income_expenditure.urls')),
     url(r'^hr2/', include('applications.hr2.urls')),
     url(r'^recruitment/', include('applications.recruitment.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+

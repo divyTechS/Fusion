@@ -4,8 +4,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
-from . import services, models
+from .. import services, models
 from applications.academic_information.models import Student, Student_attendance
+
 
 class BaseCourseView(APIView):
     permission_classes = [IsAuthenticated]
@@ -17,11 +18,13 @@ class BaseCourseView(APIView):
         extra_info = services.get_extra_info(request.user)
         return extra_info, services.is_student(extra_info)
 
+
 class ApiCourseList(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
         courses = services.get_courses_for_user(request.user)
         return Response(courses)
+
 
 class ApiCourseDashboard(BaseCourseView):
     def get(self, request, course_code):
@@ -49,6 +52,7 @@ class ApiCourseDashboard(BaseCourseView):
                 "documents": documents_count
             }
         })
+
 
 class ApiAssignments(BaseCourseView):
     def get(self, request, course_code):
@@ -103,6 +107,7 @@ class ApiAssignments(BaseCourseView):
 
         return Response(res)
 
+
 class ApiAddAssignment(BaseCourseView):
     def post(self, request, course_code):
         if not self.check_enrollment(request, course_code):
@@ -133,6 +138,7 @@ class ApiAddAssignment(BaseCourseView):
         )
         return Response({'id': a.pk})
 
+
 class ApiUploadAssignment(BaseCourseView):
     # Allow both form-data (legacy) and JSON (link submission from new UI)
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -161,6 +167,7 @@ class ApiUploadAssignment(BaseCourseView):
         )
         return Response({'id': sub.pk, 'submittedAt': timezone.now().isoformat()})
 
+
 class ApiGradeAssignment(BaseCourseView):
     def post(self, request, course_code, pk=None):
         if not self.check_enrollment(request, course_code):
@@ -176,6 +183,7 @@ class ApiGradeAssignment(BaseCourseView):
         sub.save()
         return Response({'status': 'graded'})
 
+
 class ApiDeleteAssignment(BaseCourseView):
     def delete(self, request, course_code, pk):
         if not self.check_enrollment(request, course_code):
@@ -186,6 +194,7 @@ class ApiDeleteAssignment(BaseCourseView):
             
         models.Assignment.objects.filter(pk=pk).delete()
         return Response(status=204)
+
 
 class ApiDocuments(BaseCourseView):
     def get(self, request, course_code):
@@ -217,6 +226,7 @@ class ApiDocuments(BaseCourseView):
                 'uploadedAt': d.upload_time.isoformat() if hasattr(d, 'upload_time') else None,
             })
         return Response(res)
+
 
 class ApiAddDocument(BaseCourseView):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
@@ -262,6 +272,7 @@ class ApiAddDocument(BaseCourseView):
 
         return Response({'id': doc.pk})
 
+
 class ApiDeleteDocument(BaseCourseView):
     def delete(self, request, course_code, pk):
         if not self.check_enrollment(request, course_code):
@@ -272,6 +283,7 @@ class ApiDeleteDocument(BaseCourseView):
             
         models.CourseDocuments.objects.filter(pk=pk).delete()
         return Response(status=204)
+
 
 class ApiForum(BaseCourseView):
     def get(self, request, course_code):
@@ -335,6 +347,7 @@ class ApiForum(BaseCourseView):
                 res.append(n)
         return Response(res)
 
+
 class ApiForumNew(BaseCourseView):
     def post(self, request, course_code):
         if not self.check_enrollment(request, course_code):
@@ -352,6 +365,7 @@ class ApiForumNew(BaseCourseView):
             comment=msg,
         )
         return Response({'id': f.pk})
+
 
 class ApiForumReply(BaseCourseView):
     def post(self, request, course_code):
@@ -377,6 +391,7 @@ class ApiForumReply(BaseCourseView):
             forum_reply=child,
         )
         return Response({'id': edge.pk, 'message_id': child.pk})
+
 
 class ApiForumRemove(BaseCourseView):
     def delete(self, request, course_code, pk):
@@ -404,6 +419,7 @@ class ApiForumRemove(BaseCourseView):
                     frontier.append(cid)
         models.Forum.objects.filter(pk__in=list(to_delete)).delete()
         return Response(status=204)
+
 
 class ApiQuizzes(BaseCourseView):
     def get(self, request, course_code):
@@ -433,6 +449,7 @@ class ApiQuizzes(BaseCourseView):
                 'totalQuestions': q.number_of_question if hasattr(q, 'number_of_question') else 0
             })
         return Response(res)
+
 
 class ApiCreateQuiz(BaseCourseView):
     def post(self, request, course_code):
@@ -483,6 +500,7 @@ class ApiCreateQuiz(BaseCourseView):
         )
         return Response({'id': q.pk})
 
+
 class ApiQuizDetail(BaseCourseView):
     def get(self, request, course_code, quiz_id):
         if not self.check_enrollment(request, course_code):
@@ -515,6 +533,7 @@ class ApiQuizDetail(BaseCourseView):
             'title': getattr(q, 'title', getattr(q, 'quiz_name', '')),
             'questions': res_q
         })
+
 
 class ApiQuizSubmit(BaseCourseView):
     def post(self, request, course_code, quiz_id):
@@ -559,6 +578,7 @@ class ApiQuizSubmit(BaseCourseView):
         
         return Response({'score': score, 'totalMarks': total})
 
+
 class ApiRemoveQuiz(BaseCourseView):
     def delete(self, request, course_code, quiz_id):
         if not self.check_enrollment(request, course_code):
@@ -567,6 +587,7 @@ class ApiRemoveQuiz(BaseCourseView):
         if is_student_user: return Response({'detail': 'Faculty only'}, status=403)
         models.Quiz.objects.filter(pk=quiz_id).delete()
         return Response(status=204)
+
 
 class ApiAttendance(BaseCourseView):
     def get(self, request, course_code):
@@ -660,6 +681,7 @@ class ApiAttendanceRoster(BaseCourseView):
         roster = services.get_course_roster(course_code)
         return Response(roster)
 
+
 class ApiQuestionBank(BaseCourseView):
     def get(self, request, course_code):
         if not self.check_enrollment(request, course_code): return Response({'detail': 'Not enrolled'}, status=403)
@@ -675,17 +697,21 @@ class ApiQuestionBank(BaseCourseView):
         except:
             return Response([])
 
+
 class ApiCreateBank(BaseCourseView):
     def post(self, request, course_code):
         return Response({})
+
 
 class ApiAddTopic(BaseCourseView):
     def post(self, request, course_code, bank_id):
         return Response({})
 
+
 class ApiAddQuestion(BaseCourseView):
     def post(self, request, course_code, bank_id, topic_id):
         return Response({})
+
 
 class ApiGrading(BaseCourseView):
     def get(self, request, course_code):
@@ -705,6 +731,7 @@ class ApiGrading(BaseCourseView):
             sch_res = [{'id': s.pk, 'component': s.component, 'weightage': s.weightage, 'max_marks': s.max_marks} for s in schemes]
             ev_res = [{'id': e.pk, 'scheme_id': e.scheme.pk, 'student_id': e.student.id.user.username, 'student_name': e.student.id.user.get_full_name(), 'marks_obtained': e.marks_obtained} for e in evals]
             return Response({'schemes': sch_res, 'evaluations': ev_res})
+
 
 class ApiCreateGradingScheme(BaseCourseView):
     def post(self, request, course_code):
@@ -727,6 +754,7 @@ class ApiCreateGradingScheme(BaseCourseView):
         )
         return Response({'id': gs.pk})
 
+
 class ApiEvaluate(BaseCourseView):
     def post(self, request, course_code):
         if not self.check_enrollment(request, course_code): return Response({'detail': 'Not enrolled'}, status=403)
@@ -743,6 +771,7 @@ class ApiEvaluate(BaseCourseView):
         ev.marks_obtained = m
         ev.save()
         return Response({'id': ev.pk})
+
 
 class ApiStudentGrades(BaseCourseView):
     def get(self, request, course_code):
@@ -773,4 +802,3 @@ class ApiStudentGrades(BaseCourseView):
             'grades': res,
             'totalWeightedScore': total_w
         })
-
